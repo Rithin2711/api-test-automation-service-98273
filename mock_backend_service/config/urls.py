@@ -28,9 +28,9 @@ urlpatterns = [
 
 schema_view = get_schema_view(
    openapi.Info(
-      title="My API",
+      title="API Test Automation Service",
       default_version='v1',
-      description="Test description",
+      description="Service to upload swagger and testcases, execute tests, and download results.",
    ),
    public=True,
    permission_classes=(permissions.AllowAny,),

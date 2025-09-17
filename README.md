@@ -1,3 +1,16 @@
 # Project Repository
 
-This is the initial README file for the project.
+This repository contains a Django backend service that:
+- Uploads swagger.json and an Excel of test cases
+- Parses swagger to discover endpoints
+- Executes requests using rows from the Excel
+- Writes Pass/Fail status back to a result Excel
+- Serves the result Excel for download
+
+Basic flow:
+1) POST /api/upload/swagger/ with form-data file=swagger.json
+2) POST /api/upload/testcases/ with form-data file=tests.xlsx (sheet 'TestCases' or the first sheet)
+   Required headers (case-insensitive): method or operationId, path (when method used), payload (JSON), expected_status (optional)
+3) POST /api/execute/ to run with latest files, or include {"swagger_id": X, "testcase_id": Y}
+4) GET /api/results/{file_id}/ to download the generated Excel
+5) GET /api/files/ to list uploaded and result files
