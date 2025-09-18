@@ -1,0 +1,60 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Sample Mock API",
+    "version": "1.0.0",
+    "description": "Simple sample API with GET /hello and POST /echo for testing."
+  },
+  "host": "testserver",
+  "schemes": ["http"],
+  "basePath": "/api",
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "paths": {
+    "/hello": {
+      "get": {
+        "operationId": "getHello",
+        "summary": "Returns a friendly greeting",
+        "responses": {
+          "200": {
+            "description": "Greeting message",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": { "type": "string" }
+              }
+            }
+          }
+        },
+        "tags": ["hello"]
+      }
+    },
+    "/echo": {
+      "post": {
+        "operationId": "postEcho",
+        "summary": "Echo back the provided payload",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created/Echoed",
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "tags": ["echo"]
+      }
+    }
+  }
+}
