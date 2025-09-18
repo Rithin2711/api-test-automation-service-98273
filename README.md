@@ -1,23 +1,30 @@
 # Project Repository
 
-This repository contains a Django backend service that:
-- Uploads swagger.json and an Excel of test cases
-- Parses swagger to discover endpoints
-- Executes requests using rows from the Excel
-- Writes Pass/Fail status back to a result Excel
-- Serves the result Excel for download
+This Django backend exposes a single combined endpoint to:
+- Accept a swagger.json (or .txt with JSON) and a test cases Excel (.xlsx) in one request.
+- Parse swagger to discover endpoints and base URL.
+- Execute requests for each row from the Excel.
+- Compare actual vs expected status and write results into a new "Status" column.
+- Return the modified Excel for download.
 
-Basic flow:
-1) POST /api/upload/swagger/ with form-data file=swagger.json
-2) POST /api/upload/testcases/ with form-data file=tests.xlsx (sheet 'TestCases' or the first sheet)
-   Required headers (case-insensitive): method or operationId, path (when method used), payload (JSON), expected_status (optional)
-3) POST /api/execute/ to run with latest files, or include {"swagger_id": X, "testcase_id": Y}
-4) GET /api/results/{file_id}/ to download the generated Excel
-5) GET /api/files/ to list uploaded and result files
-
-New combined option:
+Endpoint:
 - POST /api/execute/combined/ (multipart/form-data)
-  Fields:
-    - swagger: swagger.json or swagger.txt
-    - testcases: tests.xlsx
-  Returns: the updated Excel directly with a 'Status' column (Pass/Fail) without storing a result file
+  Fields (case-insensitive names in Excel rows are supported):
+    - swagger: swagger.json or swagger.txt (JSON content)
+    - testcases: tests.xlsx (sheet "TestCases" or the first sheet)
+  Excel required columns:
+    - operationId OR (method + path)
+    - payload (JSON string) [optional]
+    - expected_status (default 200 if valid integer)
+    - base_url (optional override)
+  Status values written:
+    - Pass: actual HTTP status equals expected_status
+    - Fail: actual HTTP status differs or request error with sufficient data
+    - Data Insufficient: missing/invalid required fields (e.g., missing method/opId/path or invalid expected_status)
+
+Health:
+- GET /api/health/ -> {"message": "Server is up!"}
+
+Notes:
+- No files are persisted; the endpoint processes uploads and returns the result .xlsx.
+- Swagger must be OpenAPI/Swagger 2.0 JSON.

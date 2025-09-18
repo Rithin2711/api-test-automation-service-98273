@@ -25,7 +25,8 @@ def parse_swagger_json(swagger_bytes: bytes) -> Dict[str, EndpointSpec]:
     Parse a swagger.json (OpenAPI 2.0) file and return a mapping of operationId (or method+path)
     to EndpointSpec objects. This implementation handles basic swagger 2.0 structures.
     """
-    data = json.loads(swagger_bytes.decode("utf-8"))
+    text = swagger_bytes.decode("utf-8").strip()
+    data = json.loads(text)
     host = data.get("host", "")
     schemes = data.get("schemes", ["http"])
     base_path = data.get("basePath", "")
@@ -79,12 +80,19 @@ def _parse_row_dict(row_values: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any
     path = str(row_values.get("path") or "").strip()
     payload_text = row_values.get("payload") or row_values.get("body") or "{}"
     try:
-        payload = json.loads(payload_text) if isinstance(payload_text, str) else payload_text
+        payload = json.loads(payload_text) if isinstance(payload_text, str) else (payload_text or {})
     except Exception:
         payload = {}
     base_url_override = str(row_values.get("base_url") or "").strip()
-    expected_status = int(row_values.get("expected_status") or 200)
-    return operation_id, base_url_override, {"method": method, "path": path, "payload": payload, "expected_status": expected_status}
+    # Expected status may be missing or invalid; mark as insufficient later if invalid
+    expected_status_raw = row_values.get("expected_status")
+    try:
+        expected_status = int(expected_status_raw) if expected_status_raw not in (None, "") else 200
+    except Exception:
+        expected_status = None  # invalid, will trigger Data Insufficient
+    return operation_id, base_url_override, {
+        "method": method, "path": path, "payload": payload, "expected_status": expected_status
+    }
 
 
 # PUBLIC_INTERFACE
@@ -100,7 +108,10 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
       - expected_status (optional, default 200)
       - base_url (optional to override swagger base)
 
-    Adds/Updates a 'Status' column with 'Pass' or 'Fail' based on HTTP response status match.
+    Adds/Updates a 'Status' column with:
+      - 'Pass' if actual status matches expected
+      - 'Fail' if actual status doesn't match expected or request errors with valid expected status
+      - 'Data Insufficient' if required fields are missing/invalid (e.g., no method/opId, no path with method, invalid expected_status)
     Returns tuple of (result_excel_bytes, total, passed, failed)
     """
     specs = parse_swagger_json(swagger_bytes)
@@ -128,8 +139,8 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
 
     for row in range(2, ws.max_row + 1):
         total += 1
-        row_values = {h: ws.cell(row=1, column=c).value for h, c in headers.items() if h != "status"}
-        # pull row value per header
+        # collect row values
+        row_values: Dict[str, Any] = {}
         for h, c in headers.items():
             if h == "status":
                 continue
@@ -141,24 +152,45 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
         payload = parsed["payload"]
         expected_status = parsed["expected_status"]
 
+        # Validate row data sufficiency
+        data_insufficient = False
+        if expected_status is None:
+            data_insufficient = True
+        if not operation_id and not method:
+            data_insufficient = True
+        if not operation_id and method and not path:
+            data_insufficient = True
+
+        # Resolve URL and HTTP method
         url: Optional[str] = None
-        if operation_id:
-            spec = specs.get(operation_id)
-            if spec:
-                url = _normalize_url(base_url_override or spec.base_url or "", spec.path)
-                method = spec.method
-        else:
-            # fall back to method+path
-            # try to find by method+path match
-            found_spec = None
-            for sp in specs.values():
-                if sp.method == method and sp.path == path:
-                    found_spec = sp
-                    break
-            if found_spec:
-                url = _normalize_url(base_url_override or found_spec.base_url or "", found_spec.path)
+        if not data_insufficient:
+            if operation_id:
+                spec = specs.get(operation_id)
+                if not spec:
+                    # Unknown operationId => insufficient mapping info
+                    data_insufficient = True
+                else:
+                    url = _normalize_url(base_url_override or spec.base_url or "", spec.path)
+                    method = spec.method
             else:
-                url = _normalize_url(base_url_override or "", path)
+                # fall back to method+path
+                found_spec = None
+                for sp in specs.values():
+                    if sp.method == method and sp.path == path:
+                        found_spec = sp
+                        break
+                if found_spec:
+                    url = _normalize_url(base_url_override or found_spec.base_url or "", found_spec.path)
+                else:
+                    # if base_url provided, allow direct URL build; otherwise insufficient target
+                    if base_url_override:
+                        url = _normalize_url(base_url_override, path)
+                    else:
+                        data_insufficient = True
+
+        if data_insufficient:
+            ws.cell(row=row, column=status_col, value="Data Insufficient")
+            continue
 
         status_value = "Fail"
         try:
@@ -176,6 +208,7 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
             else:
                 failed += 1
         except Exception:
+            # Only mark as Fail if we had sufficient data and attempted the request
             failed += 1
             status_value = "Fail"
 
