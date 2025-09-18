@@ -111,10 +111,15 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
       - expected_status (optional, default 200)
       - base_url (optional to override swagger base)
 
-    Adds/Updates a 'Status' column on the 'Standard Template' sheet with:
-      - 'Pass' if actual status matches expected
-      - 'Fail' if actual status doesn't match expected or request errors with valid expected status
-      - 'Data Insufficient' if required fields are missing/invalid (e.g., no method/opId/path, invalid expected_status)
+    Adds/Updates:
+      - a 'Status' column on the 'Standard Template' sheet with:
+          - 'Pass' if actual status matches expected
+          - 'Fail' if actual status doesn't match expected or request errors with valid expected status
+          - 'Data Insufficient' if required fields are missing/invalid (e.g., no method/opId/path, invalid expected_status)
+      - a 'Reason' column adjacent to 'Status' with explanatory text, such as:
+          - 'Expected 201, got 404'
+          - 'Request payload empty, insufficient data'
+          - 'Matched expected status'
 
     Returns tuple of (result_excel_bytes, total, passed, failed)
     """
@@ -145,6 +150,18 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
         ws.cell(row=1, column=status_col, value="Status")
         headers["status"] = status_col
 
+    # Ensure Reason column exists immediately after Status
+    reason_col = headers.get("reason")
+    if not reason_col:
+        # Insert as the next column to the right of Status for adjacency
+        reason_col = status_col + 1
+        # If there are existing columns to the right, we still just write header at reason_col
+        ws.cell(row=1, column=reason_col, value="Reason")
+        headers["reason"] = reason_col
+    else:
+        # If Reason existed but not adjacent, we still use existing column without reordering
+        pass
+
     total = 0
     passed = 0
     failed = 0
@@ -153,11 +170,11 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
     last_row = ws.max_row
 
     for row in range(2, last_row + 1):
-        # Consider a row empty if all non-status header columns are empty
+        # Consider a row empty if all non-status/reason header columns are empty
         is_empty = True
         row_values: Dict[str, Any] = {}
         for h, c in headers.items():
-            if h == "status":
+            if h in ("status", "reason"):
                 continue
             val = ws.cell(row=row, column=c).value
             row_values[h] = val
@@ -176,14 +193,21 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
         payload = parsed["payload"]
         expected_status = parsed["expected_status"]
 
+        # Prepare reason accumulator
+        reason_text = ""
+
         # Validate row data sufficiency
         data_insufficient = False
+        insufficient_causes: List[str] = []
         if expected_status is None:
             data_insufficient = True
+            insufficient_causes.append("Invalid expected_status")
         if not operation_id and not method:
             data_insufficient = True
+            insufficient_causes.append("Missing operationId and method")
         if not operation_id and method and not path:
             data_insufficient = True
+            insufficient_causes.append("Missing path for method")
 
         # Resolve URL and HTTP method
         url: Optional[str] = None
@@ -193,6 +217,7 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
                 if not spec:
                     # Unknown operationId => insufficient mapping info
                     data_insufficient = True
+                    insufficient_causes.append(f"Unknown operationId '{operation_id}'")
                 else:
                     url = _normalize_url(base_url_override or spec.base_url or "", spec.path)
                     method = spec.method
@@ -211,9 +236,16 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
                         url = _normalize_url(base_url_override, path)
                     else:
                         data_insufficient = True
+                        insufficient_causes.append("Unable to resolve URL (no matching swagger spec and no base_url override)")
 
         if data_insufficient:
-            ws.cell(row=row, column=status_col, value="Data Insufficient")
+            status_value = "Data Insufficient"
+            if insufficient_causes:
+                reason_text = "; ".join(insufficient_causes)
+            else:
+                reason_text = "Insufficient data to execute request"
+            ws.cell(row=row, column=status_col, value=status_value)
+            ws.cell(row=row, column=reason_col, value=reason_text)
             continue
 
         status_value = "Fail"
@@ -228,15 +260,19 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
 
             if resp.status_code == expected_status:
                 status_value = "Pass"
+                reason_text = "Matched expected status"
                 passed += 1
             else:
                 failed += 1
-        except Exception:
+                reason_text = f"Expected {expected_status}, got {resp.status_code}"
+        except Exception as exc:
             # Only mark as Fail if we had sufficient data and attempted the request
             failed += 1
             status_value = "Fail"
-
+            reason_text = f"Request error: {type(exc).__name__}"
+        # Write results
         ws.cell(row=row, column=status_col, value=status_value)
+        ws.cell(row=row, column=reason_col, value=reason_text)
 
     # Save workbook back to bytes (only 'Standard Template' modified; others untouched)
     out_stream = io.BytesIO()
