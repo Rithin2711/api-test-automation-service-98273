@@ -1,11 +1,12 @@
 import io
 from typing import Optional
 
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.utils import timezone
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, parser_classes
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import StoredFile, ExecutionRun
 from .serializers import (
@@ -15,6 +16,7 @@ from .serializers import (
     StoredFileInfoSerializer,
 )
 from .utils import execute_testcases
+from .serializers_combined import CombinedExecuteUploadSerializer
 
 
 @api_view(['GET'])
@@ -167,6 +169,59 @@ def execute(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+# PUBLIC_INTERFACE
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+def execute_combined(request):
+    """
+    PUBLIC_INTERFACE
+    summary: Execute tests with uploaded swagger and testcases in one request
+    description: |
+      Accepts multipart/form-data containing:
+        - swagger: swagger.json or swagger.txt (OpenAPI/Swagger JSON)
+        - testcases: Excel .xlsx file
+      The service parses the swagger, executes requests for each row in the Excel,
+      adds a 'Status' column (Pass/Fail), and directly returns the updated Excel file.
+
+      Response is a binary .xlsx file and is NOT stored as a result in the database.
+    requestBody:
+      multipart/form-data:
+        fields:
+          swagger: file (.json or .txt)
+          testcases: file (.xlsx)
+    responses:
+      200: Returns the updated Excel file
+      400: Validation or parsing error
+    """
+    serializer = CombinedExecuteUploadSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    swagger_file = serializer.validated_data["swagger"]
+    testcases_file = serializer.validated_data["testcases"]
+
+    # Read bytes
+    swagger_bytes = swagger_file.read()
+    testcases_bytes = testcases_file.read()
+
+    # If .txt, still treat as JSON text content
+    try:
+        # Trigger JSON parsing validation via execute_testcases -> parse_swagger_json
+        result_bytes, total, passed, failed = execute_testcases(swagger_bytes, testcases_bytes)
+    except Exception as exc:
+        return Response({"detail": f"Failed to execute: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Return the updated Excel directly
+    filename = f"results_{timezone.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    resp = HttpResponse(
+        result_bytes,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    resp["X-Execution-Summary"] = f"total={total};passed={passed};failed={failed}"
+    return resp
 
 
 # PUBLIC_INTERFACE

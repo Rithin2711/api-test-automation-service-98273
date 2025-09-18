@@ -5,6 +5,7 @@ from .views import (
     upload_testcases,
     list_files,
     execute,
+    execute_combined,
     download_result,
 )
 
@@ -14,5 +15,6 @@ urlpatterns = [
     path('upload/testcases/', upload_testcases, name='UploadTestcases'),
     path('files/', list_files, name='ListFiles'),
     path('execute/', execute, name='Execute'),
+    path('execute/combined/', execute_combined, name='ExecuteCombined'),
     path('results/<int:file_id>/', download_result, name='DownloadResult'),
 ]

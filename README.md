@@ -14,3 +14,10 @@ Basic flow:
 3) POST /api/execute/ to run with latest files, or include {"swagger_id": X, "testcase_id": Y}
 4) GET /api/results/{file_id}/ to download the generated Excel
 5) GET /api/files/ to list uploaded and result files
+
+New combined option:
+- POST /api/execute/combined/ (multipart/form-data)
+  Fields:
+    - swagger: swagger.json or swagger.txt
+    - testcases: tests.xlsx
+  Returns: the updated Excel directly with a 'Status' column (Pass/Fail) without storing a result file
