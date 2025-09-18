@@ -28,3 +28,11 @@ Health:
 Notes:
 - No files are persisted; the endpoint processes uploads and returns the result .xlsx.
 - Swagger must be OpenAPI/Swagger 2.0 JSON.
+
+Utility Script:
+- A helper CLI script is available to extract operationIds from an OpenAPI/Swagger file (JSON or YAML):
+  - Path: mock_backend_service/scripts/extract_operation_ids.py
+  - Usage:
+    - python mock_backend_service/scripts/extract_operation_ids.py mock_backend_service/interfaces/openapi.json
+    - python mock_backend_service/scripts/extract_operation_ids.py path/to/spec.yaml
+  - Output lists each operationId with its HTTP method and path.
