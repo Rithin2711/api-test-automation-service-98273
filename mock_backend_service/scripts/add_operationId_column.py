@@ -44,6 +44,9 @@ import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 
 def _read_text(path: str) -> str:
@@ -145,6 +148,78 @@ def _ensure_operationid_column(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
     return df, "operationId"
 
 
+def _apply_openpyxl_formatting(path: str, sheet_name: str) -> None:
+    """
+    Apply visual formatting to the specified sheet in the given workbook path.
+
+    Formatting includes:
+    - Bold header row, centered alignment.
+    - Thin borders around all used cells.
+    - Increased row height for header and data rows.
+    - Reasonable column widths (auto-fit approximation based on content length).
+    - Freeze top row for easier scrolling.
+    """
+    wb = load_workbook(path)
+    if sheet_name not in wb.sheetnames:
+        wb.save(path)
+        return
+    ws = wb[sheet_name]
+
+    # Freeze header row
+    ws.freeze_panes = "A2"
+
+    # Determine used range
+    max_row = ws.max_row or 1
+    max_col = ws.max_column or 1
+
+    # Styles
+    header_font = Font(bold=True)
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Apply header styling
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.alignment = center_align
+        cell.border = border
+
+    # Apply borders and alignment to data cells
+    for row in range(2, max_row + 1):
+        for col in range(1, max_col + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.alignment = wrap_align
+            cell.border = border
+
+    # Row heights
+    ws.row_dimensions[1].height = 28  # header
+    for r in range(2, max_row + 1):
+        ws.row_dimensions[r].height = 22
+
+    # Compute column widths based on max content length (approximate)
+    # Set a minimum width and cap the maximum.
+    min_width = 14
+    max_width = 50
+    for col in range(1, max_col + 1):
+        col_letter = get_column_letter(col)
+        max_len = 0
+        for row in range(1, max_row + 1):
+            val = ws.cell(row=row, column=col).value
+            if val is None:
+                continue
+            text = str(val)
+            # Consider line breaks and longer words
+            for part in text.split("\n"):
+                max_len = max(max_len, len(part))
+        # Slight padding factor; Excel width is approximate
+        width = min(max(min_width, max_len + 2), max_width)
+        ws.column_dimensions[col_letter].width = width
+
+    wb.save(path)
+
+
 # PUBLIC_INTERFACE
 def process_excel_with_operation_ids(
     swagger_path: str,
@@ -158,7 +233,7 @@ def process_excel_with_operation_ids(
       1) Load swagger.txt (JSON) and extract operationIds + (method, path) mapping.
       2) Load testcases.xlsx and ensure an 'operationId' column exists on the target sheet.
       3) Apply mapping logic to fill operationId per row, else leave blank.
-      4) Save to testcases_with_operationId.xlsx.
+      4) Save to testcases_with_operationId.xlsx, then format sheet for readability.
 
     Notes:
       - Only the specified sheet is modified; other sheets are preserved unchanged.
@@ -182,6 +257,8 @@ def process_excel_with_operation_ids(
         with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
             for name, df in sheets.items():
                 df.to_excel(writer, index=False, sheet_name=name)
+        # Apply formatting attempt (will no-op if sheet missing)
+        _apply_openpyxl_formatting(output_excel_path, sheet_name)
         return
 
     df = sheets[sheet_name].copy()
@@ -189,29 +266,16 @@ def process_excel_with_operation_ids(
     # Ensure 'operationId' column exists
     df, op_col = _ensure_operationid_column(df)
 
-    # MAPPING LOGIC:
-    # Strategy: for each row, if operationId already present -> leave it.
-    # Else, if method+path available -> find a matching operationId from swagger.
-    # Else, leave blank. Alternatively, you can cycle operation_ids list to fill generically.
-    #
-    # To customize mapping:
-    # - If your Excel has columns like "endpoint_name", "tag", or "summary", implement
-    #   matching rules here (string contains, normalization, etc.) to map to an op_id.
-    # - If there is a 1:1 order correspondence, you could assign operation_ids sequentially.
-
+    # MAPPING LOGIC (see above comment)
     for idx in range(len(df)):
         current_val = df.at[idx, op_col]
         if isinstance(current_val, str) and current_val.strip():
-            continue  # preserve existing
-        # Try method+path mapping
+            continue
         matched = _match_by_method_path(df.loc[idx], endpoints)
         if matched:
             df.at[idx, op_col] = matched
         else:
-            # Optional fallback: sequential fill from operation_ids (commented by default)
-            # seq_index = idx if idx < len(operation_ids) else None
-            # df.at[idx, op_col] = operation_ids[seq_index] if seq_index is not None else None
-            df.at[idx, op_col] = None  # Leave blank if no mapping found
+            df.at[idx, op_col] = None
 
     # Save back all sheets, replacing only the target one
     with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
@@ -220,6 +284,9 @@ def process_excel_with_operation_ids(
                 df.to_excel(writer, index=False, sheet_name=name)
             else:
                 sdf.to_excel(writer, index=False, sheet_name=name)
+
+    # Apply openpyxl-based visual formatting to make the sheet more readable
+    _apply_openpyxl_formatting(output_excel_path, sheet_name)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
