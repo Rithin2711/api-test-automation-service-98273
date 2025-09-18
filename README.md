@@ -14,3 +14,11 @@ Basic flow:
 3) POST /api/execute/ to run with latest files, or include {"swagger_id": X, "testcase_id": Y}
 4) GET /api/results/{file_id}/ to download the generated Excel
 5) GET /api/files/ to list uploaded and result files
+
+Standalone utility: Extract endpoints and payload schemas from OpenAPI
+- Location: mock_backend_service/scripts/extract_openapi_payloads.py
+- Usage:
+  python mock_backend_service/scripts/extract_openapi_payloads.py mock_backend_service/interfaces/openapi.json
+  python mock_backend_service/scripts/extract_openapi_payloads.py /path/to/swagger.json
+
+This prints a human-readable list of each path, HTTP method, and the request payload schema (if any). It supports OpenAPI 3.0+ and attempts to gracefully handle missing payloads or legacy parameter styles.
