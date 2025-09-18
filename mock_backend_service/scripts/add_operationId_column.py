@@ -2,30 +2,34 @@
 """
 PUBLIC_INTERFACE
 Standalone Script: Read operationId values from a Swagger/OpenAPI JSON text file (swagger.txt),
-add a new 'operationId' column to an Excel file (testcases.xlsx), attempt basic mapping,
-and save the result to a new Excel file (testcases_with_operationId.xlsx).
+add/fill a new 'operationId' column in an Excel file (testcases.xlsx) by matching each test row's
+endpoint and method, and save the result to a new, visually formatted Excel file
+(testcases_with_operationId.xlsx).
 
 Default locations (adjust via CLI args if needed):
 - Swagger text file: mock_backend_service/inputs/swagger.txt
 - Input Excel file:  mock_backend_service/inputs/testcases.xlsx
 - Output Excel file: mock_backend_service/inputs/testcases_with_operationId.xlsx
 
-Mapping logic:
-- If the testcases sheet already has an 'operationId' column, it will be preserved. Empty cells
-  can be auto-filled using naive heuristics.
-- If there is no 'operationId' column, a new one will be created to the right of the last column.
-- Naive mapping attempts:
-  1) If there are 'method' and 'path' columns (case-insensitive), try to match by HTTP method and path
-     against the swagger endpoints that have operationIds.
-  2) If none matched or columns missing, leave blank or fill generically if desired.
+Matching logic (documented in code):
+- The script expects the testcases sheet to describe each API call by at least the HTTP method and path.
+  Common column names (case-insensitive) it looks for:
+    • method: "method", "http_method"
+    • path:   "path", "endpoint", "url", "api_path"
+  If these columns are named differently or missing, the script will:
+    • Leave the operationId blank for those rows and continue.
+    • Print a note indicating what columns were found and which are required for automatic matching.
+- If an 'operationId' column already exists, its non-empty values are preserved; only empty cells are auto-filled.
+- The operationId is determined by exact method+path match to the swagger paths (e.g., ('POST', '/pet')).
 
-IMPORTANT:
-- This script assumes swagger.txt contains JSON OpenAPI/Swagger (2.0 or 3.x) content.
-- The Excel is processed via pandas + openpyxl. Only the first sheet is modified by default,
-  which you can override by passing --sheet.
-- You may need to adjust the mapping logic section marked with "# MAPPING LOGIC" to fit your testcases.xlsx structure.
+Output formatting:
+- The resulting Excel is styled with:
+    • Bold headers, thin cell borders, wrapped text for data cells
+    • Frozen top row
+    • Reasonable column widths
+- Only the specified sheet is modified; all other sheets remain unchanged.
 
-Requires:
+Dependencies:
 - pandas
 - openpyxl
 
@@ -71,33 +75,31 @@ def _iter_operations_from_paths(paths: Dict[str, Any]) -> Iterable[Tuple[str, st
 
 
 # PUBLIC_INTERFACE
-def parse_operation_ids_from_swagger_text(swagger_text: str) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+def parse_operation_ids_from_swagger_text(swagger_text: str) -> Dict[Tuple[str, str], str]:
     """
     PUBLIC_INTERFACE
-    Parse an OpenAPI/Swagger JSON string and return:
-      - endpoints: mapping of operationId -> {method, path}
-      - operation_ids: list of operationIds in discovery order
+    Parse an OpenAPI/Swagger JSON string and return a mapping of (METHOD, path) -> operationId.
 
-    Supports Swagger 2.0 and OpenAPI 3.x with a 'paths' object.
-    If an operation lacks an operationId, a synthesized one is generated, but these are still returned
-    to maintain row-wise fills if necessary.
+    - Expects swagger_text to be JSON (Swagger 2.0 or OpenAPI 3.x-like with 'paths').
+    - Synthesizes an operationId when missing, but real operationId is preferred if present.
     """
     data = json.loads(swagger_text)
+    paths = data.get("paths", {}) or {}
 
-    # Locate paths (common to both 2.0 and 3.x at root)
-    paths = data.get("paths", {})
-    endpoints: Dict[str, Dict[str, Any]] = {}
-    operation_ids: List[str] = []
-    seen = set()
+    mapping: Dict[Tuple[str, str], str] = {}
+    seen_ids: set[str] = set()
 
     for method, path, op in _iter_operations_from_paths(paths):
-        op_id = (op.get("operationId") or f"{method.lower()}_{path}").replace("/", "_").replace("{", "").replace("}", "")
-        if op_id not in seen:
-            endpoints[op_id] = {"method": method, "path": path}
-            operation_ids.append(op_id)
-            seen.add(op_id)
+        op_id = op.get("operationId")
+        if not op_id:
+            # Synthesize a readable id when missing
+            op_id = f"{method.lower()}_{path}".replace("/", "_").replace("{", "").replace("}", "")
+        # If duplicate operationId appears (shouldn't), keep first occurrence
+        if (method, path) not in mapping:
+            mapping[(method, path)] = op_id
+        seen_ids.add(op_id)
 
-    return endpoints, operation_ids
+    return mapping
 
 
 def _normalize_colnames(cols: List[str]) -> Dict[str, str]:
@@ -111,27 +113,33 @@ def _normalize_colnames(cols: List[str]) -> Dict[str, str]:
     return mapping
 
 
-def _match_by_method_path(row: pd.Series, endpoints: Dict[str, Dict[str, Any]]) -> Optional[str]:
+def _find_method_and_path_columns(cols_map: Dict[str, str]) -> Tuple[Optional[str], Optional[str], List[str]]:
     """
-    Try to match a row to an operationId using method+path if both are present.
-    This is a naive exact match on method and path.
+    Identify likely method and path columns using flexible naming.
+    Returns (method_col_name, path_col_name, notes)
+
+    method candidates: method, http_method
+    path candidates: path, endpoint, url, api_path
     """
-    cols_map = _normalize_colnames(list(row.index))
-    method_col = cols_map.get("method")
-    path_col = cols_map.get("path")
-    if not method_col or not path_col:
-        return None
+    notes: List[str] = []
+    method_col = None
+    path_col = None
 
-    method_val = str(row.get(method_col) or "").strip().upper()
-    path_val = str(row.get(path_col) or "").strip()
+    for candidate in ("method", "http_method"):
+        if candidate in cols_map:
+            method_col = cols_map[candidate]
+            break
+    if not method_col:
+        notes.append("No 'method' column found (looked for: method, http_method).")
 
-    if not method_val or not path_val:
-        return None
+    for candidate in ("path", "endpoint", "url", "api_path"):
+        if candidate in cols_map:
+            path_col = cols_map[candidate]
+            break
+    if not path_col:
+        notes.append("No 'path' column found (looked for: path, endpoint, url, api_path).")
 
-    for op_id, info in endpoints.items():
-        if info.get("method") == method_val and info.get("path") == path_val:
-            return op_id
-    return None
+    return method_col, path_col, notes
 
 
 def _ensure_operationid_column(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
@@ -200,8 +208,8 @@ def _apply_openpyxl_formatting(path: str, sheet_name: str) -> None:
 
     # Compute column widths based on max content length (approximate)
     # Set a minimum width and cap the maximum.
-    min_width = 14
-    max_width = 50
+    min_width = 16
+    max_width = 60
     for col in range(1, max_col + 1):
         col_letter = get_column_letter(col)
         max_len = 0
@@ -213,7 +221,6 @@ def _apply_openpyxl_formatting(path: str, sheet_name: str) -> None:
             # Consider line breaks and longer words
             for part in text.split("\n"):
                 max_len = max(max_len, len(part))
-        # Slight padding factor; Excel width is approximate
         width = min(max(min_width, max_len + 2), max_width)
         ws.column_dimensions[col_letter].width = width
 
@@ -229,16 +236,22 @@ def process_excel_with_operation_ids(
 ) -> None:
     """
     PUBLIC_INTERFACE
-    Main routine:
-      1) Load swagger.txt (JSON) and extract operationIds + (method, path) mapping.
-      2) Load testcases.xlsx and ensure an 'operationId' column exists on the target sheet.
-      3) Apply mapping logic to fill operationId per row, else leave blank.
-      4) Save to testcases_with_operationId.xlsx, then format sheet for readability.
+    Orchestrates the process:
+      1) Parse swagger.txt (JSON) to build a mapping of (METHOD, path) -> operationId.
+      2) Load testcases.xlsx, ensure an 'operationId' column exists on the target sheet.
+      3) For each row, try to match using the method and path columns (flexible naming).
+         - If matched, write the operationId to the operationId column.
+         - If method/path missing or no match, leave the cell blank.
+      4) Save to testcases_with_operationId.xlsx and visually format the target sheet.
 
-    Notes:
-      - Only the specified sheet is modified; other sheets are preserved unchanged.
-      - Mapping logic is intentionally minimal; update the section marked "# MAPPING LOGIC"
-        to suit your testcases.xlsx format (e.g., map by endpoint name columns, tags, etc.).
+    Notes on expected Excel columns (case-insensitive):
+      - method: one of ['method', 'http_method']
+      - path: one of ['path', 'endpoint', 'url', 'api_path']
+      If your sheet uses different names, either rename them or extend the candidates in
+      _find_method_and_path_columns. The script will handle missing columns gracefully and leave
+      operationId blank when it cannot match.
+
+    Only the specified sheet is modified; other sheets are preserved unchanged.
     """
     if not os.path.isfile(swagger_path):
         raise FileNotFoundError(f"Swagger file not found: {swagger_path}")
@@ -246,7 +259,7 @@ def process_excel_with_operation_ids(
         raise FileNotFoundError(f"Input Excel not found: {input_excel_path}")
 
     swagger_text = _read_text(swagger_path)
-    endpoints, operation_ids = parse_operation_ids_from_swagger_text(swagger_text)
+    method_path_to_opid = parse_operation_ids_from_swagger_text(swagger_text)
 
     # Read Excel with pandas, preserve all sheets
     xls = pd.ExcelFile(input_excel_path)
@@ -257,7 +270,7 @@ def process_excel_with_operation_ids(
         with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
             for name, df in sheets.items():
                 df.to_excel(writer, index=False, sheet_name=name)
-        # Apply formatting attempt (will no-op if sheet missing)
+        # apply formatting attempt (no-op if sheet missing)
         _apply_openpyxl_formatting(output_excel_path, sheet_name)
         return
 
@@ -266,16 +279,38 @@ def process_excel_with_operation_ids(
     # Ensure 'operationId' column exists
     df, op_col = _ensure_operationid_column(df)
 
-    # MAPPING LOGIC (see above comment)
+    # Find method and path columns with flexible naming
+    cols_map = _normalize_colnames(list(df.columns))
+    method_col, path_col, discovery_notes = _find_method_and_path_columns(cols_map)
+
+    # Add a clear note as a comment in code (log to console) if columns are missing
+    if discovery_notes:
+        print("Column discovery notes:")
+        for n in discovery_notes:
+            print(f"- {n}")
+
+    # Mapping: For each row, if method+path available, try to map to operationId
     for idx in range(len(df)):
+        # Preserve non-empty existing opId
         current_val = df.at[idx, op_col]
         if isinstance(current_val, str) and current_val.strip():
             continue
-        matched = _match_by_method_path(df.loc[idx], endpoints)
-        if matched:
-            df.at[idx, op_col] = matched
-        else:
+
+        if not method_col or not path_col:
+            # Cannot match without both columns; leave blank
             df.at[idx, op_col] = None
+            continue
+
+        method_val = str(df.at[idx, method_col] if method_col in df.columns else "").strip().upper()
+        path_val = str(df.at[idx, path_col] if path_col in df.columns else "").strip()
+
+        if not method_val or not path_val:
+            df.at[idx, op_col] = None
+            continue
+
+        # Exact match required: (METHOD, path)
+        opid = method_path_to_opid.get((method_val, path_val))
+        df.at[idx, op_col] = opid if opid else None
 
     # Save back all sheets, replacing only the target one
     with pd.ExcelWriter(output_excel_path, engine="openpyxl") as writer:
@@ -291,7 +326,7 @@ def process_excel_with_operation_ids(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read operationIds from swagger.txt and add an 'operationId' column to testcases.xlsx."
+        description="Parse operationIds from swagger.txt and write them into the 'operationId' column of the Excel."
     )
     parser.add_argument(
         "--swagger",
@@ -328,8 +363,7 @@ def main() -> int:
             sheet_name=args.sheet,
         )
         print(
-            f"Success: Added/updated 'operationId' column on sheet '{args.sheet}' "
-            f"and saved to '{args.output_excel}'."
+            f"Success: Filled 'operationId' in sheet '{args.sheet}' and saved to '{args.output_excel}'."
         )
         return 0
     except Exception as exc:
