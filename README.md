@@ -22,3 +22,17 @@ Standalone utility: Extract endpoints and payload schemas from OpenAPI
   python mock_backend_service/scripts/extract_openapi_payloads.py /path/to/swagger.json
 
 This prints a human-readable list of each path, HTTP method, and the request payload schema (if any). It supports OpenAPI 3.0+ and attempts to gracefully handle missing payloads or legacy parameter styles.
+
+Standalone utility: Execute API tests from Excel and write result statuses
+- Location: mock_backend_service/scripts/run_api_tests_from_excel.py
+- Usage:
+  python mock_backend_service/scripts/run_api_tests_from_excel.py \
+      --input path/to/tests.xlsx \
+      --sheet TestCases \
+      --endpoint-col endpoint \
+      --method-col method \
+      --payload-col payload \
+      --expected-status-col expected_status \
+      --base-url http://localhost:8000
+
+The script reads an Excel file, sends HTTP requests per row, and writes a 'status' column with pass/fail/data insufficient, saving to a new file with '_results' appended to the filename.
