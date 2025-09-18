@@ -100,24 +100,36 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
     """
     PUBLIC_INTERFACE
     Execute test cases from an Excel against endpoints defined in swagger.
-    The Excel must contain a worksheet named 'TestCases' or the first sheet will be used.
-    Required columns (case-insensitive headers):
+
+    IMPORTANT: Only the worksheet named 'Standard Template' is processed. Other sheets
+    are left untouched and unmodified.
+
+    Required columns on 'Standard Template' (case-insensitive headers):
       - method (e.g., GET, POST) or operationId (to match swagger operationId)
       - path (e.g., /health/) when method is specified (ignored if operationId uniquely maps)
       - payload (JSON string) for body where applicable
       - expected_status (optional, default 200)
       - base_url (optional to override swagger base)
 
-    Adds/Updates a 'Status' column with:
+    Adds/Updates a 'Status' column on the 'Standard Template' sheet with:
       - 'Pass' if actual status matches expected
       - 'Fail' if actual status doesn't match expected or request errors with valid expected status
-      - 'Data Insufficient' if required fields are missing/invalid (e.g., no method/opId, no path with method, invalid expected_status)
+      - 'Data Insufficient' if required fields are missing/invalid (e.g., no method/opId/path, invalid expected_status)
+
     Returns tuple of (result_excel_bytes, total, passed, failed)
     """
     specs = parse_swagger_json(swagger_bytes)
 
     wb: Workbook = load_workbook(io.BytesIO(testcase_bytes))
-    ws: Worksheet = wb["TestCases"] if "TestCases" in wb.sheetnames else wb[wb.sheetnames[0]]
+    # Only work with 'Standard Template' and do not touch other sheets
+    if "Standard Template" not in wb.sheetnames:
+        # If the required sheet is missing, return the original file with zero counts
+        out_stream = io.BytesIO()
+        wb.save(out_stream)
+        out_stream.seek(0)
+        return out_stream.read(), 0, 0, 0
+
+    ws: Worksheet = wb["Standard Template"]
 
     # Build header map (case-insensitive)
     headers: Dict[str, int] = {}
@@ -126,7 +138,7 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
         if header:
             headers[header.lower()] = col
 
-    # Ensure Status column exists
+    # Ensure Status column exists on Standard Template only
     status_col = headers.get("status")
     if not status_col:
         status_col = ws.max_column + 1
@@ -137,14 +149,26 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
     passed = 0
     failed = 0
 
-    for row in range(2, ws.max_row + 1):
-        total += 1
-        # collect row values
+    # Determine last row; iterate through all rows but skip completely empty ones
+    last_row = ws.max_row
+
+    for row in range(2, last_row + 1):
+        # Consider a row empty if all non-status header columns are empty
+        is_empty = True
         row_values: Dict[str, Any] = {}
         for h, c in headers.items():
             if h == "status":
                 continue
-            row_values[h] = ws.cell(row=row, column=c).value
+            val = ws.cell(row=row, column=c).value
+            row_values[h] = val
+            if val not in (None, ""):
+                is_empty = False
+
+        if is_empty:
+            # Do not write anything for completely empty rows
+            continue
+
+        total += 1
 
         operation_id, base_url_override, parsed = _parse_row_dict(row_values)
         method = parsed["method"]
@@ -214,7 +238,7 @@ def execute_testcases(swagger_bytes: bytes, testcase_bytes: bytes) -> Tuple[byte
 
         ws.cell(row=row, column=status_col, value=status_value)
 
-    # Save workbook back to bytes
+    # Save workbook back to bytes (only 'Standard Template' modified; others untouched)
     out_stream = io.BytesIO()
     wb.save(out_stream)
     out_stream.seek(0)
